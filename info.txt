@@ -1,0 +1,13 @@
+i pretrained the agent first on offline pregenerated high objective flowsheets across all 4 systems (but of course not all feed instances)
+i finetune now for 100 cycles, doing evaluation every 10 epoches to see whether the training helps with agent generate good flowsheets on held out evalution set. this is done to find the best model 
+After 100 rounds of evaluation, i test the trained model on a completely different held out test set (unseen instances, but the subsystems remain the same)
+I have implemented this advantages as 0.80 * terminal_obj + 0.20 * future_returns
+
+min_obj for termination: 0.70
+removed replay buffer 
+new action limts 
+self.action_limits = {'acetone_chloroform': {'max_total_units': 7, 'min_total_units': 2, 'max_distillation_columns': 3, 'max_decanters': 1, 'max_split': 1, 'max_mixer': 1, 'max_recycle': 2, 'max_solvent': 1}, 
+            'ethanol_water': {'max_total_units': 7, 'min_total_units': 2, 'max_distillation_columns': 3, 'max_decanters': 1, 'max_split': 1, 'max_mixer': 1, 'max_recycle': 2, 'max_solvent': 1},
+            'n-butanol_water': {'max_total_units': 7, 'min_total_units': 2, 'max_distillation_columns': 3, 'max_decanters': 1, 'max_split': 1, 'max_mixer': 1, 'max_recycle': 2, 'max_solvent': 1}, 
+            'water_pyridine': {'max_total_units': 7, 'min_total_units': 2, 'max_distillation_columns': 3, 'max_decanters': 1, 'max_split': 1, 'max_mixer': 1, 'max_recycle': 2, 'max_solvent': 1},
+            }
