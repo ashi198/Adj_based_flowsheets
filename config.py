@@ -24,7 +24,7 @@ class GeneralConfig:
         self.flow_latent_dim = 64
 
         # Loading trained checkpoints to resume training or evaluate
-        self.load_checkpoint_from_path = None #'./DONOT_DELETE_pretrain_with_reward_conditioning/all/best_model.pt'  # If given, model checkpoint is loaded from this path.
+        self.load_checkpoint_from_path =  None #'./DONOT_DELETE_pretrain_with_reward_conditioning/all/best_model.pt'  # If given, model checkpoint is loaded from this path.
         self.load_optimizer_state = True  # If True, the optimizer state is also loaded.
 
         # Training
@@ -38,7 +38,7 @@ class GeneralConfig:
         self.wall_clock_limit = None
         self.mlflow_experiment = 'pretrain_wo_embeddings'
         self.steps = 50 #how many instances per systems should be generated within the test set
-        self.eval_steps = 50 #how many instances per systems should be generated within the evaluation set
+        self.eval_steps = args.eval_steps #how many instances per systems should be generated within the evaluation set
         self.balanced = False if args.subsystem != 'all' else True
         self.num_instances_per_batch = args.num_instances_per_batch
         self.if_pretrain = None
@@ -58,7 +58,7 @@ class GeneralConfig:
         # Self-improvement sequence decoding
         self.gumbeldore_config = {
             # Number of trajectories with the the highest objective function evaluation to keep for training
-            "num_trajectories_to_keep": 100, # num_trajectories_to_keep for training PER instance 
+            "num_trajectories_to_keep": args.beam_search, # num_trajectories_to_keep for training PER instance 
             "keep_intermediate_trajectories": True,  # if True, we consider all intermediate, terminable trajectories
             "devices_for_workers": f"{args.device}" * 1,
             "destination_path": "./data",
@@ -100,7 +100,7 @@ class EnvConfig:
 
         # maximum number of components present simultaneously in a flowsheet
         self.max_number_of_components = 3
-        self.max_simulator_tries = 10
+        self.max_simulator_tries = 50
 
         # ----- Phase equilibrium / property data -----
         all_subsystems = ['acetone_chloroform', 'ethanol_water', 'water_pyridine', 'n-butanol_water']
@@ -126,7 +126,7 @@ class EnvConfig:
         # dict with pure component data (e.g., molar masses "M") used by literature NPV path
         self.dict_pure_component_data = self.phase_eq_generator.load_pure_component_data()
         self.component_names = list(self.dict_pure_component_data.keys())
-        self.component_names = ['acetone', 'benzene', 'chloroform', 'ethanol', 'n-butanol', 'pyridine', 'toluene', 'water', 'tetrahydrofuran']
+        #self.component_names = ['acetone', 'benzene', 'chloroform', 'ethanol', 'n-butanol', 'pyridine', 'toluene', 'water', 'tetrahydrofuran']
 
         # make a components tensor for Add solvent 
         #self.component_names = list(self.dict_pure_component_data.keys())
@@ -234,14 +234,14 @@ class EnvConfig:
         
 
         self.action_limits = {'acetone_chloroform': {'max_total_units': 7, 'min_total_units': 3, 'max_distillation_columns': 3, 'max_decanters': 1, 'max_split': 1, 'max_mixer': 1, 'max_recycle': 2, 'max_solvent': 1}, 
-                    'ethanol_water': {'max_total_units': 7, 'min_total_units': 2, 'max_distillation_columns': 3, 'max_decanters': 1, 'max_split': 1, 'max_mixer': 1, 'max_recycle': 2, 'max_solvent': 1},
+                    'ethanol_water': {'max_total_units': 7, 'min_total_units': 3, 'max_distillation_columns': 3, 'max_decanters': 1, 'max_split': 1, 'max_mixer': 1, 'max_recycle': 2, 'max_solvent': 1},
                     'n-butanol_water': {'max_total_units': 7, 'min_total_units': 2, 'max_distillation_columns': 3, 'max_decanters': 1, 'max_split': 1, 'max_mixer': 1, 'max_recycle': 2, 'max_solvent': 1}, 
                     'water_pyridine': {'max_total_units': 7, 'min_total_units': 2, 'max_distillation_columns': 3, 'max_decanters': 1, 'max_split': 1, 'max_mixer': 1, 'max_recycle': 2, 'max_solvent': 1},
                     }
 
         # ----- Recycle solver config -----
         # recycle guesses; see original env for semantics
-        self.min_obj_for_terminate = 0.7
+        self.min_obj_for_terminate = 0.0
         self.random_guesses_root_iteration = 0
         self.max_num_root_finding_interactions = 50
         self.use_wegstein = False

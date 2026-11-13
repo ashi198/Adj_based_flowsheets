@@ -55,7 +55,7 @@ class StateEncoder(nn.Module):
 
         component_emb, interaction_emb = self.component_expert.forward_raw(properties, interactions)
         flow_embeds = self.flow_expert.forward_raw(node_flows, component_emb, interaction_emb)
-        #open_stream_embeds = self.open_stream_expert.linear_transform_open_stream(flow_embeds)
+        open_stream_embeds = self.open_stream_expert.linear_transform_open_stream(flow_embeds)
 
         batch_size, num_nodes, _, _ = flow_embeds.shape
         node_embeds = torch.zeros(batch_size, num_nodes, self.latent_dim, dtype=flow_embeds.dtype, device=flow_embeds.device)
@@ -101,7 +101,7 @@ class StateEncoder(nn.Module):
         return {
             "batch_latent_nodes_embeds": node_embeds,
             "batch_latent_edges_embeds": edge_embeds_with_virtual,
-            "batch_latent_open_streams_embeds": flow_embeds,
+            "batch_latent_open_streams_embeds": open_stream_embeds,
         }
 
 
@@ -163,9 +163,7 @@ class FlowsheetNetwork(nn.Module):
         latent_nodes_transformed = batch_latent_nodes_embed[:, 1:, :] # (B, N, d) 
 
         # Now provide stream embedding to open_stream head to get logits   
-        latent_nodes_for_streams = latent_nodes_transformed.unsqueeze(2).expand(-1, -1, 2, -1) # add extra dimension and duplicate embed
-        open_stream_embeds = batch_latent_open_streams_embeds + latent_nodes_for_streams
-        open_stream_logits = self.open_stream_head(open_stream_embeds).squeeze(-1)
+        open_stream_logits = self.open_stream_head(batch_latent_open_streams_embeds).squeeze(-1)
         open_stream_logits = open_stream_logits.masked_fill(~x["open_stream_mask"], -1e9) # mask out all non valid streams from padding
         
         terminate_or_open_stream_logits['terminate_logits'] = terminate_logits

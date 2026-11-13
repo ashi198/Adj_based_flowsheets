@@ -43,17 +43,17 @@ class PhaseEqHandling:
         self.pre_list_feed_situations = []
         if systems_allowed["acetone_chloroform"]:
             self.pre_list_feed_situations.append([["acetone", "chloroform"],
-                                                  ["benzene"],
+                                                  ["benzene", "toluene"],
                                                   1, 50 + 273.15, 1.013])
 
         if systems_allowed["ethanol_water"]:
             self.pre_list_feed_situations.append([["ethanol", "water"],
-                                                  ["benzene", "toluene", "tetrahydrofuran"],
+                                                  ["benzene", "toluene"],
                                                   1, 65 + 273.15, 1.013])
-        '''if systems_allowed["ethanol_water"]:
+        if systems_allowed["ethanol_water"]:
             self.pre_list_feed_situations.append([["ethanol", "water"],
                                                   ["benzene", "toluene"],
-                                                  1, 65 + 273.15, 1.013])'''
+                                                  1, 65 + 273.15, 1.013])
 
         if systems_allowed["n-butanol_water"]:
             self.pre_list_feed_situations.append([["n-butanol", "water"],
@@ -85,9 +85,10 @@ class PhaseEqHandling:
                 self.pre_list_subsystems.append([pre_list[0] + [add_comp], pre_list[-2], pre_list[-1]])
 
         
-        #self.names_components.sort()
-        self.names_components = sorted(name for name in self.names_components if name != 'tetrahydrofuran')
-        self.names_components.append('tetrahydrofuran')
+        self.names_components.sort()
+        '''if systems_allowed["ethanol_water"]:
+            self.names_components = sorted(name for name in self.names_components if name != 'tetrahydrofuran')
+            self.names_components.append('tetrahydrofuran')'''
         print("components included in environment: ", self.names_components, "\n")
 
         # in pre_list_subsystems we have all subsystems, where we need a vle and lle

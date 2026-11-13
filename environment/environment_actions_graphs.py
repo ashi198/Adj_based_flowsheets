@@ -793,7 +793,7 @@ class FlowsheetDesign:
             self._rollback_action_history()
             self.failed_simulator_call += 1
             self.failed_outlet = self.current_state['chosen_open_stream']
-            return False, 0.0, False
+            return False, -1.0, False
 
         # update counts if worked and a *new* node was placed (recycle places no node)
         if unit_name == "recycle":

@@ -36,17 +36,17 @@ def parse_args():
     
     parser.add_argument("--epoches",
                         type=int,
-                        default=100,
-                        help="num of epoches to train")
+                        default=200, 
+                        help="num of epoches to train") #200 for all, 100 for single
     
     parser.add_argument("--device",
                         type=str,
-                        default='cuda:2',
+                        default='cuda:3',
                         help="device")
     
     parser.add_argument("--beam_search",
                         type=int,
-                        default=32,
+                        default=128,
                         help="64 or 128")
     
     parser.add_argument("--beam_search_type",
@@ -57,7 +57,7 @@ def parse_args():
     parser.add_argument("--results",
                         type=str,
                         help="specify directory for storing results", 
-                        default="./min_obj_0.7_WITHOUT_reward_conditioning_32_future_rewards")
+                        default="./correct_50_recycles_128_wo_pretrain_on_all_multiple_workers")
     
     parser.add_argument("--num_instances_per_batch",
                         type=int,
@@ -68,6 +68,11 @@ def parse_args():
                         type=bool,
                         help="whether run leave one out for unseen chemical system generalization", 
                         default=False)
+
+    parser.add_argument("--eval_steps",
+                        type=int,
+                        help="how many instances per systems should be generated within the evaluation set", 
+                        default=200) #200 for all, #50 for single 
     
     
     args = parser.parse_args()
@@ -315,10 +320,10 @@ def main(args):
     network.eval()
     
     # generate train and test instances for all four sub-systems 
-    train_instances, validation_instances, test_instances = generate_test_sets(gen_config.num_epochs, gen_config, env_config, gen_config.results_path)
+    train_instances, validation_instances, test_instances, n_system = generate_test_sets(gen_config, env_config, gen_config.results_path)
     env_config.gamma_mean, env_config.gamma_std = compute_gamma_normalization(train_instances)
-    batches = batch_instances_for_dataset_eval(gen_config, train_instances)
-    eval_batches = batch_instances_for_dataset_eval(gen_config, validation_instances)
+    batches = batch_instances_for_dataset_eval(gen_config, train_instances, n_system, if_eval=False)
+    eval_batches = batch_instances_for_dataset_eval(gen_config, validation_instances, n_system, if_eval=True)
     test_batches = batch_instances_for_dataset(gen_config, test_instances)
     print(f"Number of train_instances: {len(train_instances)}, Number of val_instances: {len(validation_instances)}, Number of test_instances: {len(test_instances)}")
     print(f"Number of train_batches: {len(batches)}, Number of val_batches: {len(eval_batches)}, Number of test_batches: {len(test_batches)}")

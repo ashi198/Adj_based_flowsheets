@@ -136,84 +136,182 @@ def build_logit_tensors_per_level(dataset, input_data, terminate_or_open_streams
     return all_lvl_zero_logits, all_lvl_one_logits, all_lvl_two_logits, all_lvl_three_logits
     
 
-def generate_test_sets(num, config, env_config, path):
-    # generate and store test sets for arena, eval etc
-    # we do this always for the same seed
+def generate_test_sets(config, env_config, path):
+    """
+    Generate balanced train, validation, and test sets.
+
+    Guarantees:
+    - Equal number of instances per subsystem in train.
+    - Equal number of instances per subsystem in validation.
+    - Equal number of instances per subsystem in test.
+    - No duplicate instances within each subsystem's train/val split.
+    - Reproducible generation using config.seed.
+
+    Note:
+    - config.eval_steps is the total validation set size.
+    - num is retained for compatibility with the original signature.
+    """
+
     np.random.seed(config.seed)
     random.seed(config.seed)
 
-    train_instances = []
-    test_instances = []
-    val_instances = []
-    total_instances = []
-
-    # for some situations, we want to test the agent on feeds provided by literature (of
-    # course only if these are considered in this training process):
-    # Acetone Chloroform: equimolar, wang2018
-    # Water Ethanol: equimolar, kunnakorn2013
-    # Butanol Water: 0.4 But, 0.6 W, luyben2008
-    # Water Pyridine: 0.1 P, 0.9 W, chen2015
-
     steps = config.steps
-    if env_config.systems_allowed["acetone_chloroform"]:
+
+    systems = {
+        "acetone_chloroform": (
+            ["acetone", "chloroform"],
+            [np.array([0.5, 0.5, 0])]
+        ),
+        "ethanol_water": (
+            ["ethanol", "water"],
+            [np.array([0.5, 0.5, 0])]
+        ),
+        "n-butanol_water": (
+            ["n-butanol", "water"],
+            [np.array([0.4, 0.6, 0])]
+        ),
+        "water_pyridine": (
+            ["water", "pyridine"],
+            [np.array([0.9, 0.1, 0])]
+        ),
+    }
+
+    train_instances = []
+    val_instances = []
+    test_instances = []
+
+    # Collect subsystem indices and literature test instances
+    subsystem_indices = {}
+
+    for system_name, (names, feeds) in systems.items():
+
+        if not env_config.systems_allowed[system_name]:
+            continue
+
         temp_train, temp_test = helper_test_set_generation(
-            names=["acetone", "chloroform"], config=env_config, steps=steps,
-            set_feeds=[[np.array([0.5, 0.5, 0])]])
+            names=names,
+            config=env_config,
+            steps=steps,
+            set_feeds=[feeds]
+        )
 
-        train_instances = train_instances + temp_train
-        test_instances = test_instances + temp_test
+        subsystem_indices[system_name] = list(set(
+            instance["feed_situation_index"]
+            for instance in temp_train
+        ))
 
-    if env_config.systems_allowed["ethanol_water"]:
-        temp_train, temp_test = helper_test_set_generation(
-            names=["ethanol", "water"], config=env_config, steps=steps,
-            set_feeds=[[np.array([0.5, 0.5, 0])]])
+        test_instances.extend(unique_instances(temp_test))
 
-        train_instances = train_instances + temp_train
-        test_instances = test_instances + temp_test
+    n_systems = len(subsystem_indices)
 
-    if env_config.systems_allowed["n-butanol_water"]:
-        temp_train, temp_test = helper_test_set_generation(
-            names=["n-butanol", "water"], config=env_config, steps=steps,
-            set_feeds=[[np.array([0.4, 0.6, 0])]])
+    if n_systems == 0:
+        raise ValueError("No subsystems enabled.")
 
-        train_instances = train_instances + temp_train
-        test_instances = test_instances + temp_test
+    # Number of validation instances per subsystem
+    val_per_system = config.eval_steps // n_systems
 
-    if env_config.systems_allowed["water_pyridine"]:
-        temp_train, temp_test = helper_test_set_generation(
-            names=["water", "pyridine"], config=env_config, steps=steps,
-            set_feeds=[[np.array([0.9, 0.1, 0])]])
-        train_instances = train_instances + temp_train
-        test_instances = test_instances + temp_test
-
-    # create random problem instances to store
-    train_indices_set = set(instance["feed_situation_index"] for instance in train_instances)
-    if config.balanced == True:
-        train_indices = list(train_indices_set) * (config.num_epochs)
+    # Number of training instances per subsystem
+    '''if config.balanced:
+        train_per_system = config.num_epochs 
     else:
-        train_indices = list(train_indices_set) * (config.num_epochs) * config.num_instances_per_batch
+        train_per_system = (
+            config.num_epochs * config.num_instances_per_batch
+        )'''
 
-    extra_indices = random.choices(list(train_indices_set), k=config.eval_steps)
-    train_indices.extend(extra_indices)
+    if n_systems == 4:
+        train_per_system = config.num_epochs * (config.num_instances_per_batch // 2)
+    else:
+        train_per_system = config.num_epochs * config.num_instances_per_batch
 
-    for index in train_indices:
-        train_instance = env_config.create_random_problem_instance(index)
-        train_instance = find_global_gamma_interaction_parameters(train_instance, env_config)
-        total_instances.append(train_instance)
-    
-    un_total_instances = unique_instances(total_instances)
-    un_test_instances = unique_instances(test_instances)
-    random.shuffle(un_total_instances)
+    # Generate train and validation instances separately per subsystem
+    for system_name, indices in subsystem_indices.items():
 
-    val_instances = un_total_instances[:config.eval_steps]
-    final_train_instances = un_total_instances[config.eval_steps:]
+        if not indices:
+            raise ValueError(
+                f"No feed indices found for {system_name}"
+            )
 
-    pickle.dump(final_train_instances, open(os.path.join(os.getcwd(), path, "train_instances.pickle"), "wb"))
-    pickle.dump(un_test_instances, open(os.path.join(os.getcwd(), path, "test_instances.pickle"), "wb"))
-    pickle.dump(val_instances, open(os.path.join(os.getcwd(), path, "val_instances.pickle"), "wb"))
+        n_required = train_per_system + val_per_system
 
-    return final_train_instances, val_instances, un_test_instances
+        instances = []
+        attempts = 0
+        max_attempts = max(1000, 20 * n_required)
 
+        while len(instances) < n_required:
+
+            if attempts >= max_attempts:
+                raise RuntimeError(
+                    f"Could not generate {n_required} unique "
+                    f"instances for {system_name}."
+                )
+
+            index = random.choice(indices)
+
+            instance = env_config.create_random_problem_instance(index)
+
+            instance = find_global_gamma_interaction_parameters(
+                instance, env_config
+            )
+
+            instances = unique_instances(instances + [instance])
+
+            attempts += 1
+
+        random.shuffle(instances)
+
+        val_instances.extend(instances[:val_per_system])
+        train_instances.extend(
+            instances[val_per_system:val_per_system + train_per_system]
+        )
+
+    # Deduplicate test instances
+    test_instances = unique_instances(test_instances)
+
+    # Balance test instances across subsystems
+    test_by_system = {}
+
+    for instance in test_instances:
+        index = instance["feed_situation_index"]
+
+        for system_name, indices in subsystem_indices.items():
+            if index in indices:
+                test_by_system.setdefault(system_name, []).append(instance)
+                break
+
+    if len(test_by_system) != n_systems:
+        raise ValueError(
+            "Some subsystems have no test instances."
+        )
+
+    test_per_system = min(
+        len(instances) for instances in test_by_system.values()
+    )
+
+    test_instances = []
+
+    for system_name in subsystem_indices:
+        instances = test_by_system[system_name]
+        random.shuffle(instances)
+        test_instances.extend(instances[:test_per_system])
+
+    # Shuffle final sets
+    random.shuffle(train_instances)
+    random.shuffle(val_instances)
+    random.shuffle(test_instances)
+
+    # Save
+    save_path = os.path.join(os.getcwd(), path)
+    os.makedirs(save_path, exist_ok=True)
+
+    for filename, instances in [
+        ("train_instances.pickle", train_instances),
+        ("val_instances.pickle", val_instances),
+        ("test_instances.pickle", test_instances),
+    ]:
+        with open(os.path.join(save_path, filename), "wb") as f:
+            pickle.dump(instances, f)
+
+    return train_instances, val_instances, test_instances, n_systems
 
     
 def find_global_gamma_interaction_parameters(problem_instance, env_config):
@@ -336,7 +434,6 @@ def find_sit_create_instance(spec_feeds, names_comps, config):
 
 
 def batch_instances_for_dataset(config, train_instances):
-
     if config.balanced == True:
         grouped_instances = defaultdict(list)
             
@@ -374,12 +471,18 @@ def batch_instances_for_dataset(config, train_instances):
     return batches
 
 
-def batch_instances_for_dataset_eval(config, train_instances):
-
+def batch_instances_for_dataset_eval(config, train_instances, n_system, if_eval):
     batches = []
     random.shuffle(train_instances)
-    for i in range(0, len(train_instances), config.num_instances_per_batch):
-        batch = train_instances[i:i + config.num_instances_per_batch]
+    if if_eval: 
+        total_instances = config.num_instances_per_batch * n_system 
+    else:
+        if n_system == 4: 
+            total_instances = config.num_instances_per_batch * 2
+        else:
+            total_instances = config.num_instances_per_batch
+    for i in range(0, len(train_instances), total_instances):
+        batch = train_instances[i:i + total_instances]
         batches.append(batch)
     
     return batches

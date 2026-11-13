@@ -15,8 +15,9 @@ os.environ["RAY_DEDUP_LOGS"] = "0"
 
 @ray.remote
 class JobPool:
-    def __init__(self, problem_instances: List[Instance]):
-        self.jobs = [(i, instance) for i, instance in enumerate(problem_instances)]
+    def __init__(self, problem_instances: List[Instance], searches_per_feed: int = 1):
+        #self.jobs = [(i, instance) for i, instance in enumerate(problem_instances)]
+        self.jobs = [(i, search_id, copy.deepcopy(instance)) for i, instance in enumerate(problem_instances) for search_id in range(searches_per_feed)]
         self.job_results = []
 
     def get_jobs(self, n_items: int):
@@ -43,6 +44,9 @@ class GumbeldoreDataset:
         self.env_config = env_config
         self.devices_for_workers: List[str] = self.gumbeldore_config["devices_for_workers"],
         self.train_instances = train_instances 
+        self.searches_per_feed = 1
+        self.num_parallel_workers = len(train_instances) * self.searches_per_feed 
+        self.batch_size = 1
 
     def generate_dataset(self, network_weights: dict, best_objective: Optional[float] = None, memory_aggressive: bool = False, if_test: bool= None, if_eval: bool = None, 
                          epoch: int = None):
@@ -55,36 +59,55 @@ class GumbeldoreDataset:
                 policies.
         """
 
-        batch_size_gpu, batch_size_cpu = (self.gumbeldore_config["batch_size_per_worker"],
-                                            self.gumbeldore_config["batch_size_per_cpu_worker"])
+        problem_instances = [FlowsheetDesign.design_flowsheets(instance, self.gen_config, self.env_config) for instance in self.train_instances]
+        
+        # Number of independent feeds processed simultaneously
+        num_parallel_feeds = min(4, len(problem_instances))
+        # Each worker processes ONE feed at a time
+        batch_size = 1
 
-        problem_instances = []
-        train_instances_search = self.train_instances 
-        for instance in train_instances_search:
-            problem_instance = FlowsheetDesign.design_flowsheets(instance, self.gen_config, self.env_config)
-            problem_instances.append(problem_instance)
+        # shared job queue
+        job_pool = JobPool.remote(copy.deepcopy(problem_instances), self.searches_per_feed)
+        results = [[] for _ in range(len(problem_instances))]
+        # Put weights in Ray object store once
+        weights_cpu = {k: v.detach().cpu() for k, v in network_weights.items()}
 
-        job_pool = JobPool.remote(copy.deepcopy(problem_instances))
-        results = [None] * len(problem_instances)
+        # Determine whether to run on GPU
+        use_gpu = any(str(d).startswith("cuda") for d in self.devices_for_workers)
+
+        # Reserve GPU resources correctly
+        if use_gpu:
+            available_gpus = ray.cluster_resources().get("GPU", 0)
+
+            if available_gpus <= 0:
+                raise RuntimeError("Ray has no GPU resources available")
+
+            # Example: 1 GPU and 4 workers -> 0.25 GPU per worker
+            num_gpus_per_worker = min(1.0, available_gpus / (num_parallel_feeds * self.searches_per_feed))
+        else:
+            num_gpus_per_worker = 0
 
         # Check if we should pin the workers to core
-        cpu_cores = [None] * len(self.devices_for_workers)
+        cpu_cores = [None] * self.num_parallel_workers
         if self.gumbeldore_config["pin_workers_to_core"] and sys.platform == "linux":
             # Get available core IDs
             affinity = list(os.sched_getaffinity(0))
-            cpu_cores = [affinity[i % len(cpu_cores)] for i in range(len(self.devices_for_workers))]
+            cpu_cores = [affinity[i % len(cpu_cores)] for i in range(self.num_parallel_workers)]
 
-        # Kick off workers
+         # Launch independent Ray workers
         future_tasks = [
-            async_sbs_worker.remote(
-                self.gen_config, self.env_config, job_pool, network_weights, device,
-                batch_size_gpu if device != "cpu" else batch_size_cpu,
-                cpu_cores[i], best_objective, memory_aggressive
+            async_sbs_worker.options(num_cpus=1, num_gpus=num_gpus_per_worker).remote(
+                self.gen_config, self.env_config, job_pool, weights_cpu, True, batch_size,
+                cpu_cores[i], best_objective, memory_aggressive, device=self.gen_config.training_device
             )
-            for i, device in enumerate(self.devices_for_workers)
+            for i in range(self.num_parallel_workers)
         ] 
 
-        with tqdm(total=len(problem_instances)) as progress_bar:
+        pending = list(future_tasks)
+        num_completed = 0
+        total_jobs = len(problem_instances) * self.searches_per_feed
+
+        ''''with tqdm(total=len(total_jobs)) as progress_bar:
             while True:
                 # Check if all workers are done. If so, break after this iteration
                 do_break = len(ray.wait(future_tasks, num_returns=len(future_tasks), timeout=0.5)[1]) == 0
@@ -94,12 +117,46 @@ class GumbeldoreDataset:
                 if len(fetched_results):
                     progress_bar.update(len(fetched_results))
                 if do_break:
-                    break
+                    break'''
+
+        with tqdm(total=total_jobs) as progress_bar:
+            while pending:
+                finished, pending = ray.wait(
+                    pending,
+                    num_returns=1,
+                    timeout=0.5
+                )
+
+                if finished:
+                    ray.get(finished)
+
+                fetched_results = ray.get(
+                    job_pool.fetch_results.remote()
+                )
+
+                for feed_idx, search_id, result in fetched_results:
+                    results[feed_idx].extend(result)
+                    num_completed += 1
+                    progress_bar.update(1)
+
+            # Collect any remaining results
+            fetched_results = ray.get(
+                job_pool.fetch_results.remote()
+            )
+
+            for feed_idx, search_id, result in fetched_results:
+                results[feed_idx].extend(result)
+                num_completed += 1
+                progress_bar.update(1)
+
+        assert num_completed == total_jobs
 
         ray.get(future_tasks)
         del job_pool
         del network_weights
-        torch.cuda.empty_cache()
+        del weights_cpu
+        if use_gpu:
+            torch.cuda.empty_cache()
 
         self.calculate_relative_advantages(results)
 
@@ -416,10 +473,9 @@ class GumbeldoreDataset:
 
 @ray.remote(max_calls=1)
 def async_sbs_worker(gen_config, env_config, job_pool: JobPool, network_weights: dict,
-                     device: str, batch_size: int,
-                     cpu_core: Optional[int] = None,
+                     use_gpu: bool, batch_size: int = 1, cpu_core: Optional[int] = None,
                      best_objective: Optional[float] = None,
-                     memory_aggressive: bool = False
+                     memory_aggressive: bool = False, device = None
                      ):
     
     def child_log_probability_fn(trajectories: List[FlowsheetDesign]) -> [np.array]:
@@ -460,8 +516,8 @@ def async_sbs_worker(gen_config, env_config, job_pool: JobPool, network_weights:
             if batch is None:
                 break
 
-            idx_list = [i for i, _ in batch]
-            root_nodes = [instance for _, instance in batch]
+            feed_idx, search_id, root_node = batch[0]
+            root_nodes = [root_node]
 
             if gen_config.gumbeldore_config["search_type"] == "beam_search":
 
@@ -496,16 +552,14 @@ def async_sbs_worker(gen_config, env_config, job_pool: JobPool, network_weights:
                         best_objective=best_objective
                     )
 
-            results_to_push = []
-            for j, result_idx in enumerate(idx_list):
-                result: List[FlowsheetDesign] = [x.state for x in beam_leaves_batch[j][:gen_config.gumbeldore_config["beam_width"]]]
+            # Results of this single feed
+            result = [x.state for x in beam_leaves_batch[0][ :gen_config.gumbeldore_config["beam_width"]]]
 
-                # Check if they need objective evaluation (this will only be true for deterministic beam search
-                if result[0].objective is None:
-                    batch_leaf_evaluation_fn(result)
-                results_to_push.append((result_idx, result))
+            if result and result[0].objective is None:
+                batch_leaf_evaluation_fn(result)
 
-            ray.get(job_pool.push_results.remote(results_to_push)) 
+            # Send result back to the job pool
+            ray.get(job_pool.push_results.remote([(feed_idx, search_id, result)]))
 
             if device != "cpu":
                 torch.cuda.empty_cache()
